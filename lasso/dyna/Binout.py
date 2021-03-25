@@ -6,6 +6,9 @@ import h5py
 import numpy as np
 import pandas as pd
 
+import plotly.graph_objects as go
+from plotly import colors
+
 from .lsda_py3 import Lsda
 
 '''
@@ -116,6 +119,19 @@ class Binout:
         >>> binout = Binout("path/to/binout")
     '''
 
+    default_plot_layout = go.Layout({
+        'title': {'x': 0.5},
+        'xaxis': {'tickformat': '.3s'},
+        'yaxis': {'tickformat': '.3s'},
+        'font': {'family': 'Segoe UI',
+                 'size': 14},
+        'template': 'plotly_white',
+        'colorway': colors.qualitative.Plotly,
+        'hovermode': 'x',
+        'width': 800,
+        'height': 500
+    })
+    
     def __init__(self, filepath: str):
         '''Constructor for a binout
 
@@ -355,6 +371,50 @@ class Binout:
 
         return df
 
+    def plot(self, *args) -> go.Figure:
+        func = {
+            'matsum': lambda: self._plot_matsum(*args[1:]),
+            'energy_ratio': lambda: self._plot_energy_ratio()
+        }
+
+        if args[0] in func:
+            return func.get(args[0])()
+        else:
+            raise ValueError("Not plottable data")
+
+    def _plot_matsum(self, *args) -> go.Figure:
+        """Plot `matsum` data by part."""
+
+        df = self.as_df('matsum', *args)
+        legend = self.legend('matsum')
+        titles = {str(i): j for i, j in zip(legend.id, legend.title)}
+
+        fig = go.Figure(layout=self.default_plot_layout)
+        fig.update_layout({'xaxis': {'title': df.index.name},
+                           'yaxis': {'title': args[-1]},
+                           'legend': {'title': 'part'}})
+
+        for each in df.columns:
+            fig.add_trace(Scatter(x=df.index,
+                                  y=df[each],
+                                  name=each + ": " + titles[each]))
+
+        return fig
+
+    def _plot_energy_ratio(self, *args) -> go.Figure:
+        fig = go.Figure(layout=self.default_plot_layout)
+        fig.update_layout({'title': {'text': 'Energy Ratio'},
+                           'xaxis': {'title': 'time'},
+                           'yaxis': {'title': 'energy_ratio',
+                                     'tickformat': '.1%'},
+                           'legend': {'title': 'part'}})
+
+        fig.add_trace(Scatter(x=self.read('glstat', 'time'),
+                              y=self.read('glstat', 'energy_ratio'),
+                              name='energy_ratio'))
+
+        return fig
+    
     def _decode_path(self, path):
         '''Decode a path and get whatever is inside.
 
