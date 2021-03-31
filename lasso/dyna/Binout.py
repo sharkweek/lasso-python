@@ -348,7 +348,9 @@ class Binout:
 
         time_array = self.read(*args[:-1], 'time')
         if data.shape[0] != time_array.shape[0]:
-            raise ValueError("data series length does not match time array length")
+            raise ValueError(
+                "data pd.Series length does not match time array length"
+            )
 
         time_pdi = pd.Index(time_array, name='time')
 
@@ -356,20 +358,47 @@ class Binout:
         if data.ndim > 1:
             df = pd.DataFrame(index=time_pdi)
 
-            if args[0] == 'rcforc':
+            if args[0] == 'rcforc':  # get names for rcforc columns
                 ids = [(str(i) + 'm') if j else (str(i) + 's')
-                    for i, j in zip(self.read('rcforc', 'ids'),
-                                    self.read('rcforc', 'side'))]
-            else:
+                       for i, j in zip(self.read('rcforc', 'ids'),
+                                       self.read('rcforc', 'side'))]
+            elif 'ids' in super().read(*args[:-1]): # all other column names
                 ids = self.read(*args[:-1], 'ids')
+            else:
+                ids = None
 
-            for i, j in enumerate(ids):
-                df[str(j)] = data.T[i]
+            if ids is not None:
+                for i, j in enumerate(ids):
+                    df[str(j)] = data.T[i]
+            else:  # create titles for nameless tensors
+                for i, j in enumerate(data.T):
+                    if args[-1][-1] == 's':
+                        col_name = '-'.join([args[-1][:-1], str(i + 1)])
+                    else:
+                        col_name = '-'.join([args[-1], str(i + 1)])
+
+                    df[col_name] = j
 
         else:
-            df = pd.Series(data, index=time_pdi, name=args[-1])
+            df = pd.DataFrame({args[-1]: data},
+                              index=time_pdi)
 
         return df
+
+    def time_based_data(self, db: str) -> list:
+        time_fields = []
+        time_shape = self.read(db, 'time').shape[0]
+
+        for field in self.read(db):
+            try:
+                shp = (self.read(db, field).shape[0] == time_shape)
+            except AttributeError:
+                shp = False
+
+            if shp and field != 'time':
+                time_fields.append(field)
+
+        return time_fields
 
     def plot(self, *args) -> go.Figure:
         func = {
