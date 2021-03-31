@@ -362,7 +362,7 @@ class Binout:
                 ids = [(str(i) + 'm') if j else (str(i) + 's')
                        for i, j in zip(self.read('rcforc', 'ids'),
                                        self.read('rcforc', 'side'))]
-            elif 'ids' in super().read(*args[:-1]): # all other column names
+            elif 'ids' in self.read(*args[:-1]):  # all other column names
                 ids = self.read(*args[:-1], 'ids')
             else:
                 ids = None
