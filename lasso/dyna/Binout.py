@@ -400,47 +400,118 @@ class Binout:
 
         return time_fields
 
-    def plot(self, *args) -> go.Figure:
-        func = {
-            'matsum': lambda: self._plot_matsum(*args[1:]),
-            'energy_ratio': lambda: self._plot_energy_ratio()
+    def plot(self, *args, **kwargs) -> go.Figure:
+        special_func = {
+            'matsum': self._plot_matsum()
         }
 
-        if args[0] in func:
-            return func.get(args[0])()
+        return special_func.get(args[0], self._plot_db(*args, **kwargs))
+
+    def _plot_db(self, db, include=None, exclude=None):
+        time_fields = self.time_based_data(db)
+
+        # type check include
+        if include is not None:
+            if type(include) == str:
+                include = list((include,))
+            elif type(include) != list:
+                raise TypeError("`include` must be str or list of str")
+
+            # filter
+            data_fields = [i for i in time_fields for j in include if j in i]
         else:
-            raise ValueError("Not plottable data")
+            data_fields = time_fields
 
-    def _plot_matsum(self, *args) -> go.Figure:
-        """Plot `matsum` data by part."""
+        if exclude is not None:
+            # type check exclude
+            if type(exclude) == str:
+                exclude = list((exclude,))
+            elif type(exclude) != list:
+                raise TypeError("`exclude` must be str or list of str")
 
-        df = self.as_df('matsum', *args)
-        legend = self.legend('matsum')
-        titles = {str(i): j for i, j in zip(legend.id, legend.title)}
+            data_fields = [
+                i for i in data_fields for j in exclude if j not in i
+            ]
 
-        fig = go.Figure(layout=self.default_plot_layout)
-        fig.update_layout({'xaxis': {'title': df.index.name},
-                           'yaxis': {'title': args[-1]},
-                           'legend': {'title': 'part'}})
+        if len(data_fields) < 1:
+            raise ValueError("No resulting data from include/exclude criteria")
 
-        for each in df.columns:
-            fig.add_trace(Scatter(x=df.index,
-                                  y=df[each],
-                                  name=each + ": " + titles[each]))
+        plot_df = pd.DataFrame(columns=['data_type', 'traces'])
+        for i in data_fields:
+            df = pd.DataFrame(self.as_df(db, i))
+            traces = [go.Scatter(x=df.index, y=df[j], name=j) for j in df]
 
+            plot_df = plot_df.append({
+                'data_type': i,
+                'traces': traces
+            }, ignore_index=True)
+
+        fig = go.Figure()
+        for i in plot_df.traces:
+            fig.add_traces(i)
         return fig
 
-    def _plot_energy_ratio(self, *args) -> go.Figure:
-        fig = go.Figure(layout=self.default_plot_layout)
-        fig.update_layout({'title': {'text': 'Energy Ratio'},
-                           'xaxis': {'title': 'time'},
-                           'yaxis': {'title': 'energy_ratio',
-                                     'tickformat': '.1%'},
-                           'legend': {'title': 'part'}})
+    def _plot_matsum(self) -> go.Figure:
+        data = {}
+        legend = self.legend('matsum')
+        titles = {str(i): str(i) + ": " + j
+                  for i, j in zip(legend.id, legend.title)}
 
-        fig.add_trace(Scatter(x=self.read('glstat', 'time'),
-                              y=self.read('glstat', 'energy_ratio'),
-                              name='energy_ratio'))
+        data_types = self.time_based_data('matsum')
+        for each in data_types:
+            data[each] = self.as_df('matsum', each)
+            data[each].rename(columns=titles, inplace=True)
+
+        # create dataframe of all traces
+        plot_df = pd.DataFrame(columns=['data_type', 'part', 'trace'])
+        for data_type in data:
+            for part in data[data_type]:
+                plot_df = plot_df.append({
+                    'data_type': data_type,
+                    'part': part,
+                    'trace': go.Scatter(x=data[data_type].index,
+                                        y=data[data_type][part],
+                                        name=part,
+                                        visible=(data_type == data_types[0]))
+                }, ignore_index=True)
+
+        # create figure and add traces
+        fig = go.Figure(layout=go.Layout(
+            {'title': {'text': 'Matsum Data',
+                       'x': 0.5},
+             'xaxis': {'title': 't',
+                       'tickformat': '.3s'},
+             'yaxis': {'title': data_types[0],
+                       'tickformat': '.3s'},
+             'hovermode': 'closest',
+             'font': {'family': 'Segoe UI',
+                      'size': 14},
+             'colorway': colors.qualitative.Plotly,
+             'template': 'plotly_white',
+             'legend': {'title': 'Model'},
+             'width': 800,
+             'height': 500}
+        ))
+
+        for trace in plot_df.trace:
+            fig.add_trace(trace)
+
+        # update figure with dropdown by data type
+        dropdown = [{'label': i,
+                     'method': 'update',
+                     'args': [{'visible': plot_df['data_type'] == i},
+                              {'yaxis': {'title': i}}]}
+                    for i in plot_df['data_type'].unique()]
+
+        fig.update_layout(updatemenus=[{'active': 0,
+                                        'type': 'dropdown',
+                                        'buttons': dropdown,
+                                        'direction': "down",
+                                        'x': 0.01,
+                                        'xanchor': 'left',
+                                        'y': 0.99,
+                                        'yanchor': 'top',
+                                        'showactive': True}])
 
         return fig
     
