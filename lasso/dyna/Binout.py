@@ -358,12 +358,22 @@ class Binout:
         if data.ndim > 1:
             df = pd.DataFrame(index=time_pdi)
 
-            if args[0] == 'rcforc':  # get names for rcforc columns
+            # get names for rcforc columns
+            if args[0] == 'rcforc':
                 ids = [(str(i) + 'm') if j else (str(i) + 's')
                        for i, j in zip(self.read('rcforc', 'ids'),
                                        self.read('rcforc', 'side'))]
-            elif 'ids' in self.read(*args[:-1]):  # all other column names
+            # get names by id
+            elif ('ids' in self.read(*args[:-1])
+                  and self.read(*args[:-1], 'ids').shape[0]
+                  == self.read(*args).shape[1]):
+                # all other column names
                 ids = self.read(*args[:-1], 'ids')
+            # get names by legend
+            elif ('legend_ids' in self.read(*args[:-1])
+                  and self.read(*args[:-1], 'legend_ids').shape[0]
+                  == self.read(*args).shape[1]):
+                ids = self.read(*args[:-1], 'legend_ids')
             else:
                 ids = None
 
@@ -402,10 +412,10 @@ class Binout:
 
     def plot(self, *args, **kwargs) -> go.Figure:
         special_func = {
-            'matsum': self._plot_matsum()
+            'matsum': self._plot_matsum
         }
 
-        return special_func.get(args[0], self._plot_db(*args, **kwargs))
+        return special_func.get(args[0], self._plot_db)(*args, **kwargs)
 
     def _plot_db(self, db, include=None, exclude=None):
         time_fields = self.time_based_data(db)
@@ -446,21 +456,53 @@ class Binout:
                 'traces': traces
             }, ignore_index=True)
 
-        fig = go.Figure()
+        fig = go.Figure(layout=self.default_plot_layout)
         for i in plot_df.traces:
             fig.add_traces(i)
+
         return fig
 
-    def _plot_matsum(self) -> go.Figure:
+    def _plot_matsum(self, db, part_filter=None, include=None,
+                     exclude=None) -> go.Figure:
+        time_fields = self.time_based_data(db)
+
+        # type check include
+        if include is not None:
+            if type(include) == str:
+                include = list((include,))
+            elif type(include) != list:
+                raise TypeError("`include` must be str or list of str")
+
+            # filter
+            data_types = [i for i in time_fields for j in include if j in i]
+        else:
+            data_types = time_fields
+
+        if exclude is not None:
+            # type check exclude
+            if type(exclude) == str:
+                exclude = list((exclude,))
+            elif type(exclude) != list:
+                raise TypeError("`exclude` must be str or list of str")
+
+            data_types = [
+                i for i in data_types for j in exclude if j not in i
+            ]
+
         data = {}
-        legend = self.legend('matsum')
+        legend = self.legend(db)
         titles = {str(i): str(i) + ": " + j
                   for i, j in zip(legend.id, legend.title)}
 
-        data_types = self.time_based_data('matsum')
         for each in data_types:
-            data[each] = self.as_df('matsum', each)
-            data[each].rename(columns=titles, inplace=True)
+            if part_filter is not None:
+                data[each] = self.as_df(db, each)[part_filter].rename(
+                    columns=titles
+                )
+            else:
+                data[each] = self.as_df(db, each).rename(
+                    columns=titles
+                )
 
         # create dataframe of all traces
         plot_df = pd.DataFrame(columns=['data_type', 'part', 'trace'])
@@ -469,41 +511,31 @@ class Binout:
                 plot_df = plot_df.append({
                     'data_type': data_type,
                     'part': part,
-                    'trace': go.Scatter(x=data[data_type].index,
-                                        y=data[data_type][part],
-                                        name=part,
-                                        visible=(data_type == data_types[0]))
+                    'trace': go.Scatter(
+                        x=data[data_type].index,
+                        y=data[data_type][part],
+                        name=data_type,
+                        visible=(part == data[data_type].columns[0])
+                    )
                 }, ignore_index=True)
 
         # create figure and add traces
-        fig = go.Figure(layout=go.Layout(
-            {'title': {'text': 'Matsum Data',
-                       'x': 0.5},
-             'xaxis': {'title': 't',
-                       'tickformat': '.3s'},
-             'yaxis': {'title': data_types[0],
-                       'tickformat': '.3s'},
-             'hovermode': 'closest',
-             'font': {'family': 'Segoe UI',
-                      'size': 14},
-             'colorway': colors.qualitative.Plotly,
-             'template': 'plotly_white',
-             'legend': {'title': 'Model'},
-             'width': 800,
-             'height': 500}
-        ))
-
+        fig = go.Figure(layout=self.default_plot_layout)
         for trace in plot_df.trace:
             fig.add_trace(trace)
 
         # update figure with dropdown by data type
         dropdown = [{'label': i,
                      'method': 'update',
-                     'args': [{'visible': plot_df['data_type'] == i},
+                     'args': [{'visible': plot_df['part'] == i},
                               {'yaxis': {'title': i}}]}
-                    for i in plot_df['data_type'].unique()]
+                    for i in plot_df['part'].unique()]
 
-        fig.update_layout(updatemenus=[{'active': 0,
+        fig.update_layout({'title': {'text': '`matsum` Data'},
+                           'legend': {'title': 'Part'},
+                           'hovermode': 'closest',
+                           'yaxis': {'title': data_types[0]}},
+                          updatemenus=[{'active': 0,
                                         'type': 'dropdown',
                                         'buttons': dropdown,
                                         'direction': "down",
