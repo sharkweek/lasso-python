@@ -395,6 +395,77 @@ class Binout:
 
         return df
 
+    # udpate other functions that use new format before replacing existing as_df
+    def _as_df(self, db: str,
+               include: list = [],
+               exclude: list = []) -> pd.DataFrame:
+        """Cast time-based binout data as a pandas DataFrame
+
+        Parameters
+        ----------
+        db : str
+            binout database (e.g. 'glstat', 'matsum', etc.)
+        include : list, optional
+            data search strings to include from DataFrame, by default []
+        exclude : list, optional
+            data search strings to exclude from results DataFrame,
+            by default []
+
+        Returns
+        -------
+        pandas.DataFrame
+            DataFrame containing binout data indexed by time
+
+        Raises
+        ------
+        ValueError
+            if `db` is not in binout
+        TypeError
+            if `include` or `exclude` are not lists
+        """
+
+        # type check inputs
+        if db not in self.read():
+            raise ValueError('`db` not in binout')
+        if not isinstance(include, list):
+            raise TypeError("`include` must be a list")
+        if not isinstance(exclude, list):
+            raise TypeError("`exclude` must be a list")
+
+        time = self.read(db, 'time')
+        df = pd.DataFrame(index=time)
+        tbd = [i for i in self.time_based_data(db) if i != 'time']
+        out_col = list(set(tbd))  # known issue: duplicate 'cycle' in `tbd`
+
+        # add data to dataframe
+        for i in tbd:
+            data = self.read(db, i)
+
+            # nested data arrays (e.g. tensors)
+            if len(data.shape) > 1:
+                col = [i + '_' + str(j) for j in range(data.shape[1])]
+                right_df = pd.DataFrame(data, columns=col, index=time)
+                out_col.remove(i)
+                out_col += col
+
+            # single data arrays
+            else:
+                right_df = pd.DataFrame({i: data}, index=time)
+                out_col.append(i)
+
+            df = df.join(right_df)
+
+        out_col = list(set(out_col))  # remove duplicates
+
+        # filter out for include and exclude
+        if include:
+            out_col = [u for u in out_col for v in include if v in u]
+        if exclude:
+            out_col = [u for u in out_col for v in exclude if v not in u]
+
+        return df[out_col]
+    
+    
     def time_based_data(self, db: str) -> list:
         time_fields = []
         time_shape = self.read(db, 'time').shape[0]
