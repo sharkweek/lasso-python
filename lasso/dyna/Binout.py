@@ -9,6 +9,8 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly import colors
 
+from re import search
+
 from .lsda_py3 import Lsda
 
 '''
@@ -119,7 +121,7 @@ class Binout:
         >>> binout = Binout("path/to/binout")
     '''
 
-    default_plot_layout = go.Layout({
+    default_ploty_layout = go.Layout({
         'title': {'x': 0.5},
         'xaxis': {'tickformat': '.3s'},
         'yaxis': {'tickformat': '.3s'},
@@ -224,7 +226,7 @@ class Binout:
 
         return self._decode_path(path)
 
-    def legend(self, db: str) -> pd.DataFrame:
+    def legend(self, db: str, format='dataframe') -> pd.DataFrame:
         """Legend as a pandas.DataFrame
 
         Parameters
@@ -246,7 +248,7 @@ class Binout:
         -------
         >>> from lasso.dyna import Binout
         >>> binout = Binout('path/to/binout')
-        >>> binout.legend('matsum')
+        >>> binout.legend('matsum', format='dataframe')
 
               id     title
         0      1    Part 1
@@ -254,58 +256,70 @@ class Binout:
         2      3    Part 3
         3      4    Part 4
         4      5    Part 5
-        ...  ...       ...
-        94    95   Part 95
-        95    96   Part 96
-        96    97   Part 97
-        97    98   Part 98
-        98    99   Part 99
-        99   100  Part 100
+
+        >>> binout.legend('matsum', format='dict')
+
+        {1: 'Part 1',
+         2: 'Part 2',
+         3: 'Part 3',
+         4: 'Part 4',
+         5: 'Part 5}
+
         """
-    
+
         # validate legend exists
         if 'legend' not in self.read(db):
             raise ValueError(db + " has no legend")
 
+        legend_ids = self.read(db, 'legend_ids')
         legend = self.read(db, 'legend')
+        legend = [legend[i:i + 80].strip() for i in range(0, len(legend), 80)]
 
-        if 'legend_ids' in self.read(db):
-            id_field = 'legend_ids'
+        if format == 'dataframe':
+            # parse string into pd.DataFrame
+            return pd.DataFrame({'id': legend_ids, 'title': legend})
+        elif format == 'dict':
+            return {i: j for i, j in zip(legend_ids, legend)}
         else:
-            id_field = 'ids'
+            raise ValueError(
+                "`format` must be either \'dataframe\' or \'dict\'"
+            )
 
-        # parse string into dataframe
-        return pd.DataFrame({
-            'id': self.read(db, id_field),
-            'title': [legend[i:i + 80].strip()
-                      for i in range(0, len(legend), 80)]
-        })
+    # udpate other functions that use new format before replacing existing
+    # as_df
+    def as_df(self, branch: str,
+              include: list = [],
+              exclude: list = []) -> pd.DataFrame:
+        """Cast time-based binout data as a pandas DataFrame
 
-    def as_df(self, *args) -> pd.DataFrame:
-        """ read data and convert to pandas dataframe if possible 
-        
         Parameters
         ----------
-        path: Union[Tuple[str, ...], List[str], str]
-            internal path in the folder structure of the binout
-        
+        branch : str
+            binout database (e.g. 'glstat', 'matsum', etc.)
+        include : list of regex str, optional
+            data search strings to include from DataFrame, by default []
+        exclude : list of regex str, optional
+            data search strings to exclude from results DataFrame,
+            by default []
+
         Returns
         -------
-        df: pandas.DataFrame
-            data converted to pandas dataframe
-        
+        pandas.DataFrame
+            DataFrame containing binout data indexed by time
+
         Raises
         ------
         ValueError
-            if the data cannot be converted to a pandas dataframe
-        
+            if `branch` is not in binout
+        TypeError
+            if `include` or `exclude` are not lists
+
         Examples
         --------
+        Read a time-dependent array.
+
             >>> from lasso.dyna import Binout
             >>> binout = Binout('path/to/binout')
-            
-            Read a time-dependent array.
-            
             >>> binout.as_df('glstat', 'eroded_kinetic_energy')
             time
             0.00000        0.000000
@@ -321,7 +335,7 @@ class Binout:
             119.99988    105.220786
             Name: eroded_kinetic_energy, Length: 601, dtype: float64
 
-            Read a time and id-dependent array.
+        Read a time and id-dependent array.
 
             >>> binout.as_df('secforc', 'x_force')
                                   1             2             3  ...            33            34            35
@@ -337,6 +351,75 @@ class Binout:
             119.40012  9.946615e-01 -8.541475e+00  1.188757e+01  ... -3.662228e-02  7.675800e+00 -4.889339e+00
             119.60046  9.677638e-01 -8.566695e+00  1.130774e+01  ...  5.144208e-02  7.273052e+00 -5.142375e+00
             119.80017  1.035165e+00 -8.040828e+00  1.124044e+01  ... -1.213450e-02  7.188395e+00 -5.279221e+00
+
+        Notes
+        -----
+        Both `include` and `exclude` lists are considered `AND` lists. The
+        method will filter by ALL strings in each list. For example:
+
+            >>> binout.as_df('glstat', ['hourglass', 'energy'])
+
+        will return a dataframe with only two columns: 'hourglass_energy' and
+        'eroded_hourglass_energy'.
+
+        If, however, it is desired to search on an `OR` basis, the strings in
+        the list should include the regex alternation operator '|`.
+
+            >>> binout.as_df('glstat', ['hourglass|energy'])
+
+        This will result in every column that either has 'hourglass' or
+        energy' in it.
+        """
+
+        # type check inputs
+        if branch not in self.read():
+            raise ValueError('`branch` not in binout')
+        if not isinstance(include, list):
+            raise TypeError("`include` must be a list")
+        if not isinstance(exclude, list):
+            raise TypeError("`exclude` must be a list")
+
+        time = self.read(branch, 'time')
+        df = pd.DataFrame(index=time)
+        tbd = [i for i in self.time_based_data(branch) if i != 'time']
+        out_col = list(set(tbd))  # known issue: duplicate 'cycle' in `tbd`
+
+        # add data to dataframe
+        for i in tbd:
+            data = self.read(branch, i)
+
+            # nested data arrays
+            #TODO: fix to consider differeing types of ids
+            if len(data.shape) > 1:
+                col = [i + '_' + str(j) for j in range(data.shape[1])]
+                right_df = pd.DataFrame(data, columns=col, index=time)
+                out_col.remove(i)
+                out_col += col
+
+            # single data arrays
+            else:
+                right_df = pd.DataFrame({i: data}, index=time)
+                out_col.append(i)
+
+            df = df.join(right_df)
+
+        out_col = list(set(out_col))  # remove duplicates
+
+        # filter out for include and exclude
+        if include:
+            for each in include:
+                out_col = [u for u in out_col if search(each, u)]
+        if exclude:
+            for each in exclude:
+                out_col = [u for u in out_col if not search(each, u)]
+
+        return df[out_col]
+
+    # TODO: rework to include filters similarly to `plot_branch()`
+    def _as_df(self, *args) -> pd.DataFrame:
+        """Read data as a pandas pd.DataFrame.
+
+        See docs for `Binout.read().
         """
 
         data = self.read(*args)
@@ -369,11 +452,6 @@ class Binout:
                   == self.read(*args).shape[1]):
                 # all other column names
                 ids = self.read(*args[:-1], 'ids')
-            # get names by legend
-            elif ('legend_ids' in self.read(*args[:-1])
-                  and self.read(*args[:-1], 'legend_ids').shape[0]
-                  == self.read(*args).shape[1]):
-                ids = self.read(*args[:-1], 'legend_ids')
             else:
                 ids = None
 
@@ -394,85 +472,17 @@ class Binout:
                               index=time_pdi)
 
         return df
-
-    # udpate other functions that use new format before replacing existing as_df
-    def _as_df(self, db: str,
-               include: list = [],
-               exclude: list = []) -> pd.DataFrame:
-        """Cast time-based binout data as a pandas DataFrame
-
-        Parameters
-        ----------
-        db : str
-            binout database (e.g. 'glstat', 'matsum', etc.)
-        include : list, optional
-            data search strings to include from DataFrame, by default []
-        exclude : list, optional
-            data search strings to exclude from results DataFrame,
-            by default []
-
-        Returns
-        -------
-        pandas.DataFrame
-            DataFrame containing binout data indexed by time
-
-        Raises
-        ------
-        ValueError
-            if `db` is not in binout
-        TypeError
-            if `include` or `exclude` are not lists
-        """
-
-        # type check inputs
-        if db not in self.read():
-            raise ValueError('`db` not in binout')
-        if not isinstance(include, list):
-            raise TypeError("`include` must be a list")
-        if not isinstance(exclude, list):
-            raise TypeError("`exclude` must be a list")
-
-        time = self.read(db, 'time')
-        df = pd.DataFrame(index=time)
-        tbd = [i for i in self.time_based_data(db) if i != 'time']
-        out_col = list(set(tbd))  # known issue: duplicate 'cycle' in `tbd`
-
-        # add data to dataframe
-        for i in tbd:
-            data = self.read(db, i)
-
-            # nested data arrays (e.g. tensors)
-            if len(data.shape) > 1:
-                col = [i + '_' + str(j) for j in range(data.shape[1])]
-                right_df = pd.DataFrame(data, columns=col, index=time)
-                out_col.remove(i)
-                out_col += col
-
-            # single data arrays
-            else:
-                right_df = pd.DataFrame({i: data}, index=time)
-                out_col.append(i)
-
-            df = df.join(right_df)
-
-        out_col = list(set(out_col))  # remove duplicates
-
-        # filter out for include and exclude
-        if include:
-            out_col = [u for u in out_col for v in include if v in u]
-        if exclude:
-            out_col = [u for u in out_col for v in exclude if v not in u]
-
-        return df[out_col]
     
     
-    def time_based_data(self, db: str) -> list:
+    def time_based_data(self, branch: str) -> list:
+        """A list of time-based data for given binout branch."""
+
         time_fields = []
-        time_shape = self.read(db, 'time').shape[0]
+        time_shape = self.read(branch, 'time').shape[0]
 
-        for field in self.read(db):
+        for field in self.read(branch):
             try:
-                shp = (self.read(db, field).shape[0] == time_shape)
+                shp = (self.read(branch, field).shape[0] == time_shape)
             except AttributeError:
                 shp = False
 
@@ -488,6 +498,40 @@ class Binout:
 
         return special_func.get(args[0], self._plot_db)(*args, **kwargs)
 
+    
+    def _plot_branch(self, branch, include=[], exclude=[],
+                     layout=default_plot_layout):
+        """Plot a binout branch
+
+        [extended_summary]
+
+        Parameters
+        ----------
+        branch : str
+            branch of binout (e.g. 'glstat', 'matsum', etc.)
+        include : list, optional
+            list of search strings to include in result, by default []
+        exclude : list, optional
+            list of search strings to exclude in result, by default []
+        layout : go.Layout, optional
+            plotly layout to apply to plot, by default Binout.default_plot_layout
+
+        Returns
+        -------
+        go.Figure
+            plotly `Figure` of specified binout branch
+        """
+
+        df = self.as_df(branch, include, exclude)
+
+        fig = go.Figure(layout=layout)
+        for i in df:
+            fig.add_trace(go.Scatter(x=df.index,
+                                     y=df[i],
+                                     name=i))
+
+        return fig
+    
     def _plot_db(self, db, include=None, exclude=None):
         time_fields = self.time_based_data(db)
 
